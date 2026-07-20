@@ -1,0 +1,33 @@
+{
+  "ATT-2026-6C08C5": {
+    "applicant_info": {
+      "name": "Jane Doe",
+      "id_number": "TX-998877",
+      "email": "jane.doe@example.com"
+    },
+    "intake_status": {
+      "is_complete": true,
+      "missing_fields": []
+    },
+    "documents": [
+      {
+        "doc_id": "DOC-001",
+        "type": "Passport",
+        "legibility_score": 0.95
+      }
+    ],
+    "verification": {
+      "database_match": true,
+      "unverified_fields": []
+    },
+    "risk": {
+      "score": 2,
+      "level": "Low",
+      "indicators": ["None"]
+    },
+    "decision": {
+      "status": "pending",
+      "recommendation": null
+    }
+  }
+}

@@ -1,0 +1,81 @@
+intake_payload_validation:
+  description: >
+    Review the applicant information contained in the following case data payload: 
+    {case_data}
+    
+    Extract the "request" object from it. Verify that all required applicant fields are present: name, nationality, id_number.
+    Verify required request fields: service_type, document_refs, channel.
+    If any required information is missing, return status = "incomplete".
+  expected_output: "Return ONLY valid JSON matching the IntakeResult schema."
+  agent: intake_validation_agent
+document_analysis_task:
+  description: >
+    Review the following case data payload: {case_data}
+    
+    1. Locate the "document_refs" list inside the "request" object.
+    2. Read the content associated with these documents.
+       - IMPORTANT: When calling the tool to read a file, you MUST provide 
+         'file_path', 'start_line' (set to 1), and 'line_count' (set to 10000).
+    3. Extract the document type and identity fields. 
+    4. For every extracted field, you MUST assign a confidence score (a float between 0.0 and 1.0).
+    5. Assess quality metrics: provide "legibility" (e.g., "high", "medium", "low") and a list of "flags" for any anomalies detected.
+    
+    FORMATTING RULES:
+    - Return a JSON object with a single root key: "documents".
+    - "documents" must be a list of objects.
+    - Each field within "extracted_fields" must be an object with exactly two keys: "value" (string) and "confidence" (float).
+    - If a document is missing or unreadable, include it in the list with empty/null indicators rather than failing the entire process.
+  expected_output: "Return ONLY valid JSON matching the DocumentAnalysisResult schema."
+  agent: document_analysis_agent
+verification_task:
+  description: >
+    You are the Verification Officer. Your task is to reconcile the 'request' data 
+    provided by the applicant with the 'extracted_fields' from the processed documents.
+    
+    1. Access the 'request' object from the {case_data}.
+    2. Access the 'document_analysis_result' from the {case_data}.
+    3. Compare fields: 'name', 'nationality', and 'id_number'. (If a field is missing from the extracted document data, set extracted_value to 'NOT_FOUND' or an empty string instead of null.)
+    4. For each field:
+       - If the value in 'request' matches the 'value' in 'extracted_fields', set match = true.
+       - If they differ, set match = false.
+    5. 'source' should be labeled as "internal_intake_reconciliation".
+    
+    Ensure the output matches the VerificationResult schema strictly.
+    
+  expected_output: "A JSON object containing the list of checks, unverifiable_fields, and the overall_match_rate."
+  agent: verification_agent
+
+risk_assessment_task:
+  description: >
+    Review the full dossier: {case_data}.
+    
+    1. Duplicate Check: 
+       - You have access to the 'case_id' inside the {case_data} JSON.
+       - Use 'Case Log Search' with query={applicant.id_number} and query_type='id_number'.
+       - If the result returns a list containing IDs other than the 'case_id' from the payload, set 'duplicate' detected = true.
+    2. Blacklist Check: Perform a simulated check. If 'id_number' matches 
+       '0000000000', set blacklist_match detected = true.
+    3. Tampering Heuristic: Flag 'document_tampering_signal' detected = true 
+       if 'document_analysis_result.documents' contains any flags in quality_assessment.
+    4. Compute a 'risk_score' (0-100) and 'risk_level' (low/medium/high).
+    
+    You MUST return the output following the exact structure of the RiskResult schema.
+  expected_output: "Return ONLY valid JSON matching the RiskResult schema."
+  agent: risk_assessment_agent
+
+decision_recommendation_task:
+  description: >
+    Review the following case dossier payload: {case_data}
+    
+    Extract the "case_id" from the root of the JSON payload. 
+    You MUST use this exact case_id when executing the case_log_search tool. Do not use placeholder text.
+    
+    Review all evidence from the intake, document analysis, verification, and risk assessment to produce one recommendation: approve, reject, or manual_review.
+  expected_output: "Return ONLY valid JSON matching the DecisionResult schema."
+  agent: decision_support_agent
+
+notification_task:
+  description: >
+    Prepare notifications based on the final case recommendation or request for info.
+  expected_output: "Return ONLY valid JSON matching the CommunicationResult schema."
+  agent: communication_agent

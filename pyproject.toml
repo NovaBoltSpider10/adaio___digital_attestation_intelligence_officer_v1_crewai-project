@@ -1,0 +1,33 @@
+[project]
+name = "adaio___digital_attestation_intelligence_officer"
+version = "0.1.0"
+description = "adaio___digital_attestation_intelligence_officer using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[file-processing,litellm,tools]>=1.15.2,<2.0.0",
+    "langchain-core>=1.4.9",
+    "langsmith>=0.10.0",
+    "opentelemetry-api>=1.42.1",
+    "opentelemetry-instrumentation-crewai>=0.62.1",
+    "opentelemetry-sdk>=1.42.1",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+adaio___digital_attestation_intelligence_officer = "adaio___digital_attestation_intelligence_officer.main:run"
+run_crew = "adaio___digital_attestation_intelligence_officer.main:run"
+train = "adaio___digital_attestation_intelligence_officer.main:train"
+replay = "adaio___digital_attestation_intelligence_officer.main:replay"
+test = "adaio___digital_attestation_intelligence_officer.main:test"
+run_with_trigger = "adaio___digital_attestation_intelligence_officer.main:run_with_trigger"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"
+
+[tool.uv]
+override-dependencies = ["litellm<=1.82.6"]
