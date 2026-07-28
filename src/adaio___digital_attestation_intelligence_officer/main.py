@@ -18,17 +18,16 @@ def run():
     
     mock_intake_payload = {
     "applicant": {
-        "name": "Jane Doe",
-        "nationality": "American",
-        "id_number": "2021778000"
+        "name": "Jane Elizabeth Doe",
+        "nationality": "United States",
+        "id_number": "ID-99201"
     },
     "service_type": "attestation",
-
     "channel": "portal",
     "document_refs": {
-        "transcript": os.path.join(project_root, "transcript.txt")
+        "transcript": os.path.join(project_root, "attestation_digital.pdf")
     }
-    }
+}
 
     # 1. Trigger the case creation
     case_id = orchestrator.create_case(mock_intake_payload)
@@ -43,9 +42,9 @@ def run():
     
     if final_case_state["state"] == "CLOSED":
         print(
-    "Final Recommendation:",
-    final_case_state.get("decision", {}).get("recommendation", "Unknown")
-)
+            "Final Recommendation:",
+            final_case_state.get("decision_result", {}).get("recommendation", "Unknown")
+        )
         print("\nFull Audit Log:")
         for log in final_case_state["audit_log"]:
             print(f"  - {log['ts']} | {log['agent'].upper()} | {log['event']}")

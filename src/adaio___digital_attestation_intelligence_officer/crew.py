@@ -4,17 +4,29 @@ import datetime
 import uuid
 import logging
 import json
+import base64
+import requests
 import crewai.llms.cache as _crewai_cache
-from typing import List, Optional
+from typing import List, Optional, Union
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+# --- OCR & DOCUMENT PROCESSING IMPORTS ---
+from PIL import Image
+
+try:
+    import pypdf
+except ImportError:
+    import PyPDF2 as pypdf
 
 # --- CREWAI IMPORTS ---
 from crewai import LLM, Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, task
 from crewai_tools import FileReadTool, SerperDevTool
 from crewai.tools import tool
+
 _crewai_cache.mark_cache_breakpoint = lambda msg: msg
+
 # =====================================================================
 # SECTION 0: INITIALIZATION & ENVIRONMENT
 # =====================================================================
@@ -31,6 +43,7 @@ logger.info("ADAIO initialized")
 # --- GLOBAL TOOLS ---
 file_reader = FileReadTool()
 search_tool = SerperDevTool()
+
 @tool("Case Log Search")
 def search_case_logs(query: str, query_type: str = "case_id"):
     """
@@ -47,6 +60,98 @@ def search_case_logs(query: str, query_type: str = "case_id"):
             if data.get("request", {}).get("applicant", {}).get("id_number") == query
         ]
         return matches if matches else "No duplicate cases found."
+
+# =====================================================================
+# OCR & EXTRACTION UTILITY FUNCTION (OLLAMA / GEMMA DRIVEN)
+# =====================================================================
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "gemma3")
+
+def ocr_with_ollama(image_path_or_pil: Union[str, Image.Image]) -> str:
+    """
+    Sends an image to Ollama using a multimodal model to extract text.
+    """
+    try:
+        if isinstance(image_path_or_pil, str):
+            with open(image_path_or_pil, "rb") as image_file:
+                base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+        else:
+            import io
+            buffered = io.BytesIO()
+            image_path_or_pil.save(buffered, format="PNG")
+            base64_image = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+        payload = {
+            "model": OLLAMA_VISION_MODEL,
+            "prompt": "Extract and transcribe all legible text from this image exactly as shown. Do not add conversational commentary.",
+            "images": [base64_image],
+            "stream": False
+        }
+
+        response = requests.post(OLLAMA_URL, json=payload, timeout=60)
+        response.raise_for_status()
+        
+        result = response.json()
+        return result.get("response", "").strip()
+
+    except Exception as e:
+        logger.error(f"Ollama OCR failed: {e}")
+        return f"[OCR ERROR: {str(e)}]"
+
+def extract_file_content(file_path: str) -> str:
+    """
+    Utility function to extract text content from files deterministically.
+    Handles standard text files, images via Ollama OCR, and PDFs (digital + Ollama OCR fallback).
+    """
+    if not os.path.exists(file_path):
+        return "ERROR: File not found."
+
+    ext = os.path.splitext(file_path)[1].lower()
+
+    # 1. Image Files -> OCR via Ollama
+    if ext in ['.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.webp']:
+        try:
+            extracted = ocr_with_ollama(file_path)
+            return extracted if extracted else "[OCR WARNING: No legible text detected in image]"
+        except Exception as e:
+            return f"ERROR performing OCR on image via Ollama: {str(e)}"
+
+    # 2. PDF Files -> Digital extraction with Ollama OCR fallback for scanned pages
+    elif ext == '.pdf':
+        text = ""
+        try:
+            reader = pypdf.PdfReader(file_path)
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+        except Exception as e:
+            logger.warning(f"Digital PDF extraction error on {file_path}: {e}")
+
+        if text.strip():
+            return text.strip()
+
+        # Fallback to Ollama OCR if digital text extraction yielded no text (scanned PDF)
+        try:
+            from pdf2image import convert_from_path
+            images = convert_from_path(file_path)
+            ocr_text = ""
+            for img in images:
+                ocr_text += ocr_with_ollama(img) + "\n"
+            return ocr_text.strip() if ocr_text.strip() else "[OCR WARNING: No legible text detected in PDF pages]"
+        except Exception as e:
+            if text.strip():
+                return text.strip()
+            return f"ERROR extracting PDF (Digital text empty & Ollama OCR fallback failed): {str(e)}"
+
+    # 3. Plain text / CSV / Markdown / JSON files
+    else:
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except Exception as e:
+            return f"ERROR reading file: {str(e)}"
+
 # =====================================================================
 # SECTION 1: DATA SHAPES (PYDANTIC SCHEMAS)
 # =====================================================================
@@ -60,15 +165,14 @@ class ExtractedField(BaseModel):
     value: str
     confidence: float
 
-# In SECTION 1: DATA SHAPES
 class FieldValue(BaseModel):
-    value: str
+    value: Union[str, float, int]
     confidence: float
 
 class DocumentDetail(BaseModel):
     doc_id: str
     doc_type: str
-    extracted_fields: dict[str, FieldValue]  # Maps to the structure in your requirement
+    extracted_fields: dict[str, FieldValue]
     quality_assessment: dict # Structure: {"legibility": str, "flags": List[str]}
 
 class DocumentAnalysisResult(BaseModel):
@@ -144,29 +248,27 @@ class AdaioDigitalAttestationIntelligenceOfficerCrew:
     def document_analysis_agent(self) -> Agent:
         return Agent(
             config=self.agents_config["document_analysis_agent"],
-            tools=[FileReadTool()],
+            tools=[],
             allow_delegation=False,
             verbose=True,
             llm=groq_smart_llm,
         )
 
     @agent
-# In crew.py
-    @agent
     def verification_agent(self) -> Agent:
         return Agent(
             config=self.agents_config["verification_agent"],
-            tools=[], # Keep empty: No external internet/mock tools needed for internal comparison
+            tools=[],
             allow_delegation=False,
             verbose=True,
-            llm=groq_fast_llm, # Llama 3.3 is very efficient at this JSON-to-JSON comparison
+            llm=groq_fast_llm,
         )
 
     @agent
     def risk_assessment_agent(self) -> Agent:
         return Agent(
             config=self.agents_config["risk_assessment_agent"],
-            tools=[search_case_logs], # Keep this tool to query internal history
+            tools=[search_case_logs],
             allow_delegation=False,
             verbose=True,
             llm=groq_fast_llm,
@@ -285,9 +387,6 @@ class CaseOrchestrator:
         entry = {"ts": ts, "agent": agent_name, "event": event_name}
         case_obj["audit_log"].append(entry)
         case_obj["updated_at"] = ts
-        
-        # Here you would typically write to a database (mocked as file write)
-        # with open('./data/case_logs.json', 'w') as f: json.dump(case_store, f)
 
     def transition_to(self, case_id, next_state, agent="orchestrator", event="state_change"):
         """Validates and applies state transitions."""
@@ -299,16 +398,27 @@ class CaseOrchestrator:
     def run_pipeline(self, case_id: str):
         """Drives the case through the state machine."""
         try:
-            # Start the flow
-            self.transition_to(case_id, "INTAKE_CHECK", "orchestrator", "starting_intake")
-            
             # 1. Intake
+            self.transition_to(case_id, "INTAKE_CHECK", "orchestrator", "starting_intake")
             res = self._execute_agent_step("intake", case_store[case_id])
             if res.get("status") == "incomplete":
                 self.transition_to(case_id, "AWAITING_INFO", "intake", "request_missing_info")
-                return # Stop pipeline until resubmission
+                return 
             
             self.transition_to(case_id, self.transitions["INTAKE_CHECK"], "intake", "intake_complete")
+
+            # === DETERMINISTIC EXTRACTION STEP WITH OCR SUPPORT ===
+            logger.info(f"Extracting raw text (with OCR support) for case {case_id}...")
+            case_obj = case_store[case_id]
+            doc_refs = case_obj.get("request", {}).get("document_refs", {})
+            
+            raw_docs_payload = {}
+            for doc_key, file_path in doc_refs.items():
+                raw_docs_payload[doc_key] = extract_file_content(file_path)
+            
+            # Inject the raw text directly into the case store context
+            case_store[case_id]["extracted_raw_text"] = raw_docs_payload
+            # =======================================================
 
             # 2. Document Analysis
             res = self._execute_agent_step("document_analysis", case_store[case_id])
@@ -340,7 +450,6 @@ class CaseOrchestrator:
             self.transition_to(case_id, "FAILED", "orchestrator", "error_occurred")
 
     def _execute_agent_step(self, step_type: str, case_data: dict) -> dict:
-        # 1. Define the mapping of step_type to factory methods
         step_map = {
             "intake": (self.crew_factory.intake_validation_agent, self.crew_factory.intake_payload_validation),
             "document_analysis": (self.crew_factory.document_analysis_agent, self.crew_factory.document_analysis_task),
@@ -355,8 +464,48 @@ class CaseOrchestrator:
 
         agent_func, task_func = step_map[step_type]
         agent, task = agent_func(), task_func()
-        time.sleep(10)
-        # 2. Implement retry logic (Retry once on failure)
+        
+        logger.info(f"Applying rate-limit break before {step_type} step...")
+        time.sleep(60)
+
+        # =====================================================================
+        # CONTEXT ISOLATION: Build scoped context tailored strictly to sub-agent SOW boundaries
+        # =====================================================================
+        payload_context = {}
+        if step_type == "intake":
+            payload_context = {"request": case_data.get("request")}
+        elif step_type == "document_analysis":
+            payload_context = {"extracted_raw_text": case_data.get("extracted_raw_text")}
+        elif step_type == "verification":
+            payload_context = {
+                "request": case_data.get("request"),
+                "document_analysis_result": case_data.get("document_analysis_result")
+            }
+        elif step_type == "risk":
+            payload_context = {
+                "case_id": case_data.get("case_id"),
+                "request": case_data.get("request"),
+                "document_analysis_result": case_data.get("document_analysis_result"),
+                "verification_result": case_data.get("verification_result")
+            }
+        elif step_type == "decision":
+            payload_context = {
+                "case_id": case_data.get("case_id"),
+                "request": case_data.get("request"),
+                "document_analysis_result": case_data.get("document_analysis_result"),
+                "verification_result": case_data.get("verification_result"),
+                "risk_result": case_data.get("risk_result")
+            }
+        elif step_type == "communication":
+            payload_context = {
+                "case_id": case_data.get("case_id"),
+                "decision_result": case_data.get("decision_result"),
+                "request": case_data.get("request")
+            }
+        else:
+            payload_context = case_data
+        # =====================================================================
+
         max_attempts = 2
         for attempt in range(max_attempts):
             try:
@@ -367,7 +516,7 @@ class CaseOrchestrator:
                     verbose=True,
                 )
                 
-                result = single_step_crew.kickoff(inputs={"case_data": json.dumps(case_data)})
+                result = single_step_crew.kickoff(inputs={"case_data": json.dumps(payload_context)})
                 
                 if result.pydantic:
                     return result.pydantic.model_dump()
@@ -376,10 +525,12 @@ class CaseOrchestrator:
             except Exception as e:
                 logger.error(f"Attempt {attempt + 1} failed for {step_type}: {e}")
                 if attempt == max_attempts - 1:
-                    # After the final attempt, re-raise to be handled by the Orchestrator
                     raise e
+                
+                logger.warning("Rate limit or error encountered. Backing off for 60 seconds before retry...")
+                time.sleep(60)
         
-        result = single_step_crew.kickoff(inputs={"case_data": json.dumps(case_data)})
+        result = single_step_crew.kickoff(inputs={"case_data": json.dumps(payload_context)})
         
         if result.pydantic:
             return result.pydantic.model_dump() 

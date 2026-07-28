@@ -12,19 +12,17 @@ document_analysis_task:
   description: >
     Review the following case data payload: {case_data}
     
-    1. Locate the "document_refs" list inside the "request" object.
-    2. Read the content associated with these documents.
-       - IMPORTANT: When calling the tool to read a file, you MUST provide 
-         'file_path', 'start_line' (set to 1), and 'line_count' (set to 10000).
-    3. Extract the document type and identity fields. 
+    1. Locate the "extracted_raw_text" dictionary inside the payload.
+    2. Analyze the text contents provided for each document.
+    3. Extract the document type and critical identity fields. 
     4. For every extracted field, you MUST assign a confidence score (a float between 0.0 and 1.0).
     5. Assess quality metrics: provide "legibility" (e.g., "high", "medium", "low") and a list of "flags" for any anomalies detected.
     
     FORMATTING RULES:
     - Return a JSON object with a single root key: "documents".
-    - "documents" must be a list of objects.
-    - Each field within "extracted_fields" must be an object with exactly two keys: "value" (string) and "confidence" (float).
-    - If a document is missing or unreadable, include it in the list with empty/null indicators rather than failing the entire process.
+    - Ensure all numerical values (like GPA and Credits) are wrapped in quotes as strings.
+    - "documents" must be a list of objects matching the DocumentAnalysisResult schema exactly.
+    - Do not output any preamble, thought processes, or markdown formatting outside of the JSON structure.
   expected_output: "Return ONLY valid JSON matching the DocumentAnalysisResult schema."
   agent: document_analysis_agent
 verification_task:
@@ -67,13 +65,20 @@ decision_recommendation_task:
   description: >
     Review the following case dossier payload: {case_data}
     
-    Extract the "case_id" from the root of the JSON payload. 
-    You MUST use this exact case_id when executing the case_log_search tool. Do not use placeholder text.
+    1. Extract the "case_id" from the root of the JSON payload. 
+       You MUST use this exact case_id when executing the case_log_search tool. Do not use placeholder text.
     
-    Review all evidence from the intake, document analysis, verification, and risk assessment to produce one recommendation: approve, reject, or manual_review.
+    2. Analyze all evidence across the dossier using these STRICT decision rules:
+       - IF risk_level is 'high' OR risk_score > 50 -> recommendation MUST be 'reject'.
+       - IF overall_match_rate < 0.80 OR unverifiable_fields is not empty -> recommendation MUST be 'manual_review'.
+       - IF risk_level is 'low' AND overall_match_rate >= 0.80 AND no critical field mismatches exist -> recommendation MAY be 'approve'.
+    
+    3. In your output rationale:
+       - Explicitly mention the `overall_match_rate` and list any failed checks (e.g., fields marked match=false or NOT_FOUND).
+       - Explain clearly why the decision rules led to your recommended action. Do not ignore missing or failed verification checks.
+
   expected_output: "Return ONLY valid JSON matching the DecisionResult schema."
   agent: decision_support_agent
-
 notification_task:
   description: >
     Prepare notifications based on the final case recommendation or request for info.
