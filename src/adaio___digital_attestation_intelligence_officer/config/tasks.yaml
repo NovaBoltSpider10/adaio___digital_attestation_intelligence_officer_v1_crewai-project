@@ -3,26 +3,30 @@ intake_payload_validation:
     Review the applicant information contained in the following case data payload: 
     {case_data}
     
-    Extract the "request" object from it. Verify that all required applicant fields are present: name, nationality, id_number.
-    Verify required request fields: service_type, document_refs, channel.
-    If any required information is missing, return status = "incomplete".
+    1. Extract the "request" object from it. Verify that all required applicant fields are present: name, nationality, id_number.
+    2. Verify required request fields: service_type, document_refs, channel.
+    3. FOR EVERY document reference listed in "document_refs", YOU MUST call the 
+       "Verify Document Existence" tool with the document's doc_id / file path to verify it exists on the server.
+    4. If any required field is missing OR if any document verification tool call returns an ERROR / 404, 
+       set status = "incomplete" and list the missing/invalid items under missing_fields.
   expected_output: "Return ONLY valid JSON matching the IntakeResult schema."
   agent: intake_validation_agent
 document_analysis_task:
   description: >
     Review the following case data payload: {case_data}
     
-    1. Locate the "extracted_raw_text" dictionary inside the payload.
-    2. Analyze the text contents provided for each document.
-    3. Extract the document type and critical identity fields. 
-    4. For every extracted field, you MUST assign a confidence score (a float between 0.0 and 1.0).
-    5. Assess quality metrics: provide "legibility" (e.g., "high", "medium", "low") and a list of "flags" for any anomalies detected.
+    1. Locate the "extracted_raw_text" dictionary inside the payload, which contains text content and preliminary quality assessments for each document.
+    2. Extract document metadata, doc_type, and critical identity fields. 
+    3. For every extracted field, assign a confidence score (float between 0.0 and 1.0).
+    4. Construct a strict "quality_assessment" dict containing:
+       - "legibility": (string: "high", "medium", or "low")
+       - "flags": (list of detected flag strings/anomalies)
     
     FORMATTING RULES:
     - Return a JSON object with a single root key: "documents".
-    - Ensure all numerical values (like GPA and Credits) are wrapped in quotes as strings.
-    - "documents" must be a list of objects matching the DocumentAnalysisResult schema exactly.
-    - Do not output any preamble, thought processes, or markdown formatting outside of the JSON structure.
+    - "documents" must be a list of objects matching the DocumentAnalysisResult schema strictly.
+    - Each document object MUST include the populated "quality_assessment" dictionary for downstream risk and verification agents.
+    - Do not output any preamble or markdown formatting outside of the JSON structure.
   expected_output: "Return ONLY valid JSON matching the DocumentAnalysisResult schema."
   agent: document_analysis_agent
 verification_task:

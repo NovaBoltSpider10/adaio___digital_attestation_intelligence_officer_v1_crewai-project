@@ -2,76 +2,86 @@
 import sys
 import os
 import json
+import uvicorn
 
-# Import the new Orchestrator we built in crew.py
-from adaio___digital_attestation_intelligence_officer.crew import CaseOrchestrator, case_store
+from adaio___digital_attestation_intelligence_officer.orchestrator import CaseOrchestrator
+from adaio___digital_attestation_intelligence_officer.utils.tools import case_store
 
 def run():
     """
-    Run the ADAIO pipeline via the Orchestrator state machine.
+    Run the ADAIO pipeline via local CLI mode.
     """
-    print("Initializing ADAIO Case Orchestrator...")
+    print("Initializing ADAIO Case Orchestrator (CLI mode)...")
     orchestrator = CaseOrchestrator()
 
-# Define the project root and files
     project_root = os.getcwd()
     
     mock_intake_payload = {
-    "applicant": {
-        "name": "Jane Elizabeth Doe",
-        "nationality": "United States",
-        "id_number": "ID-99201"
-    },
-    "service_type": "attestation",
-    "channel": "portal",
-    "document_refs": {
-        "transcript": os.path.join(project_root, "attestation_digital.pdf")
+        "applicant": {
+            "name": "Jane Elizabeth Doe",
+            "nationality": "United States",
+            "id_number": "ID-99201"
+        },
+        "service_type": "attestation",
+        "channel": "portal",
+        "document_refs": {
+            "transcript": os.path.join(project_root, "attestation.txt")
+        }
     }
-}
 
-    # 1. Trigger the case creation
     case_id = orchestrator.create_case(mock_intake_payload)
     print(f"\n--- NEW CASE CREATED: {case_id} ---\n")
 
-    # 2. Run the state machine pipeline
     orchestrator.run_pipeline(case_id)
     
-    # 3. Print the final result
     print("\n--- PIPELINE COMPLETE ---")
-    final_case_state = case_store[case_id]
     
-    if final_case_state["state"] == "CLOSED":
-        print(
-            "Final Recommendation:",
-            final_case_state.get("decision_result", {}).get("recommendation", "Unknown")
-        )
-        print("\nFull Audit Log:")
-        for log in final_case_state["audit_log"]:
-            print(f"  - {log['ts']} | {log['agent'].upper()} | {log['event']}")
+    final_case_state = orchestrator.case_store.get(case_id)
+
+    if final_case_state:
+        if final_case_state.get("state") == "CLOSED":
+            print(
+                "Final Recommendation:",
+                final_case_state.get("decision_result", {}).get("recommendation", "Unknown")
+            )
+            print("\nFull Audit Log:")
+            for log in final_case_state.get("audit_log", []):
+                print(f"   - {log['ts']} | {log['agent'].upper()} | {log['event']}")
+        else:
+            print(f"Case ended in state: {final_case_state.get('state')}")
     else:
-        print(f"Case ended in state: {final_case_state['state']}")
+        print(f"Error: Case ID '{case_id}' was not found in case_store.")
+
+
+def serve():
+    """
+    Run the FastAPI server for HTTP triggers.
+    """
+    print("Starting ADAIO FastAPI Web Server on http://0.0.0.0:8000 ...")
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
 
 
 def train():
-    """Disabled for PoC: Standard CrewAI training bypasses the Orchestrator."""
-    print("Training is disabled for this PoC architecture. Run the orchestrator via 'run' instead.")
+    print("Training is disabled for this PoC architecture. Run 'run' or 'serve' instead.")
 
 def replay():
-    """Disabled for PoC: Standard CrewAI replay bypasses the Orchestrator."""
-    print("Replay is disabled for this PoC architecture. Run the orchestrator via 'run' instead.")
+    print("Replay is disabled for this PoC architecture. Run 'run' or 'serve' instead.")
 
 def test():
-    """Disabled for PoC: Standard CrewAI testing bypasses the Orchestrator."""
-    print("Testing is disabled for this PoC architecture. Run the orchestrator via 'run' instead.")
+    print("Testing is disabled for this PoC architecture. Run 'run' or 'serve' instead.")
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: main.py <command> [<args>]")
+        print("Commands: run | serve | train | replay | test")
         sys.exit(1)
 
     command = sys.argv[1]
     if command == "run":
         run()
+    elif command == "serve":
+        serve()
     elif command == "train":
         train()
     elif command == "replay":
