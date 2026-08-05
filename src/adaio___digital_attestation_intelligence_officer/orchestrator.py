@@ -11,6 +11,16 @@ from adaio___digital_attestation_intelligence_officer.utils.ocr import extract_f
 
 logger = logging.getLogger("ADAIO")
 
+def calculate_auditable_score(verification_res: dict, risk_res: dict) -> float:
+    """Calculates a deterministic confidence score (0.0 to 100.0) in Python."""
+    match_rate = verification_res.get("overall_match_rate", 0.0) if verification_res else 0.0
+    risk_score = risk_res.get("risk_score", 100) if risk_res else 100
+    
+    # 60% weight on match rate, 40% weight on inverted risk score
+    match_component = match_rate * 60.0
+    risk_component = max(0, 100 - risk_score) * 0.40
+    
+    return round(match_component + risk_component, 2)
 
 class CaseOrchestrator:
     def __init__(self, case_store_ref=None):
@@ -66,10 +76,19 @@ class CaseOrchestrator:
             # 1. Intake
             self.transition_to(case_id, "INTAKE_CHECK", "orchestrator", "starting_intake")
             res = self._execute_agent_step("intake", self.case_store[case_id])
+            
+            # --- FIX FOR ITEM 2: Notify applicant when intake is incomplete ---
             if res.get("status") == "incomplete":
+                self.case_store[case_id]["intake_result"] = res
                 self.transition_to(case_id, "AWAITING_INFO", "intake", "request_missing_info")
+                
+                # Execute communication step so applicant isn't "ghosted"
+                comm_res = self._execute_agent_step("communication", self.case_store[case_id])
+                self.case_store[case_id]["communication_result"] = comm_res
+                self._log_event(case_id, "communication", "applicant_notified_missing_info")
                 return
 
+            self.case_store[case_id]["intake_result"] = res
             self.transition_to(case_id, self.transitions["INTAKE_CHECK"], "intake", "intake_complete")
 
             # OCR Step
@@ -104,9 +123,26 @@ class CaseOrchestrator:
             self.case_store[case_id]["decision_result"] = res
             self.transition_to(case_id, self.transitions["DECISION"], "decision", "decision_complete")
 
-            # Final steps
+            # --- FIX FOR ITEM 6: Aggregate Complete Verification Dossier ---
+            dossier = {
+                "case_id": case_id,
+                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "applicant_request": self.case_store[case_id].get("request"),
+                "intake_result": self.case_store[case_id].get("intake_result"),
+                "document_analysis_result": self.case_store[case_id].get("document_analysis_result"),
+                "verification_result": self.case_store[case_id].get("verification_result"),
+                "risk_result": self.case_store[case_id].get("risk_result"),
+                "decision_result": self.case_store[case_id].get("decision_result"),
+            }
+            self.case_store[case_id]["dossier"] = dossier
             self.transition_to(case_id, "DOSSIER_GENERATED", "orchestrator", "dossier_created")
-            self.transition_to(case_id, "NOTIFIED", "orchestrator", "notified_applicant")
+
+            # --- FIX FOR ITEM 6: Trigger Communication Agent before closing ---
+            comm_res = self._execute_agent_step("communication", self.case_store[case_id])
+            self.case_store[case_id]["communication_result"] = comm_res
+            self.transition_to(case_id, "NOTIFIED", "communication", "notified_applicant")
+
+            # Close Case
             self.transition_to(case_id, "CLOSED", "orchestrator", "case_closed")
 
         except Exception as e:
@@ -151,11 +187,17 @@ class CaseOrchestrator:
                 "request": d.get("request"),
                 "document_analysis_result": d.get("document_analysis_result"),
                 "verification_result": d.get("verification_result"),
-                "risk_result": d.get("risk_result")
+                "risk_result": d.get("risk_result"),
+                "calculated_score": calculate_auditable_score(
+                    d.get("verification_result", {}), 
+                    d.get("risk_result", {})
+                )
             },
             "communication": lambda d: {
                 "case_id": d.get("case_id"),
+                "state": d.get("state"),
                 "decision_result": d.get("decision_result"),
+                "intake_result": d.get("intake_result"),
                 "request": d.get("request")
             }
         }

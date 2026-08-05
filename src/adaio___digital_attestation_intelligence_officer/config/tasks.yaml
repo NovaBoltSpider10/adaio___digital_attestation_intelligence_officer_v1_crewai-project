@@ -7,10 +7,12 @@ intake_payload_validation:
     2. Verify required request fields: service_type, document_refs, channel.
     3. FOR EVERY document reference listed in "document_refs", YOU MUST call the 
        "Verify Document Existence" tool with the document's doc_id / file path to verify it exists on the server.
-    4. If any required field is missing OR if any document verification tool call returns an ERROR / 404, 
+    4. Verify that the number of document entries in "document_refs" is greater than 0. If "document_refs" is empty, set status = "incomplete" and add "document_refs" to missing_fields.
+    5. If any required field is missing OR if any document verification tool call returns an ERROR / 404, 
        set status = "incomplete" and list the missing/invalid items under missing_fields.
   expected_output: "Return ONLY valid JSON matching the IntakeResult schema."
   agent: intake_validation_agent
+
 document_analysis_task:
   description: >
     Review the following case data payload: {case_data}
@@ -29,6 +31,7 @@ document_analysis_task:
     - Do not output any preamble or markdown formatting outside of the JSON structure.
   expected_output: "Return ONLY valid JSON matching the DocumentAnalysisResult schema."
   agent: document_analysis_agent
+
 verification_task:
   description: >
     You are the Verification Officer. Your task is to reconcile the 'request' data 
@@ -80,11 +83,24 @@ decision_recommendation_task:
     3. In your output rationale:
        - Explicitly mention the `overall_match_rate` and list any failed checks (e.g., fields marked match=false or NOT_FOUND).
        - Explain clearly why the decision rules led to your recommended action. Do not ignore missing or failed verification checks.
+       
+    4. You must map the `calculated_score` provided in the {case_data} payload exactly into the `confidence_score` field in your output. Do not calculate this yourself.
 
   expected_output: "Return ONLY valid JSON matching the DecisionResult schema."
   agent: decision_support_agent
+
 notification_task:
   description: >
-    Prepare notifications based on the final case recommendation or request for info.
+    Review the case state and output from the payload: {case_data}
+    
+    1. IF state == 'AWAITING_INFO' or intake_result.status == 'incomplete':
+       Generate a notification requesting the applicant submit missing fields: {intake_result.missing_fields}.
+    2. IF decision_result.recommendation == 'approve':
+       Generate an official Approval Notice.
+    3. IF decision_result.recommendation == 'reject':
+       Generate a polite Rejection Notice summarizing rationale.
+    4. IF decision_result.recommendation == 'manual_review':
+       Generate an Acknowledgement Notice stating the application is under human review.
+    5. You must output the full text of the generated notification into the `message_body` field.
   expected_output: "Return ONLY valid JSON matching the CommunicationResult schema."
   agent: communication_agent

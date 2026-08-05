@@ -59,3 +59,4 @@ class CommunicationResult(BaseModel):
     message_sent: bool
     channel: str
     message_id: str
+    message_body: str = Field(description="The complete generated text of the notification email/message sent to the applicant")
